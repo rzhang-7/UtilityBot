@@ -15,8 +15,7 @@ log = logging.getLogger(__name__)
 # Initialize OpenAI client
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=os.environ.get('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 
@@ -79,7 +78,7 @@ class MeetingNotesCog(commands.Cog):
     async def summarize_text(self, text):
         try:
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="deepseek-chat",
                 messages=[
                     {
                         "role": "system",
@@ -92,6 +91,7 @@ class MeetingNotesCog(commands.Cog):
                     },
                     {"role": "user", "content": text},
                 ],
+                stream=False,
                 max_tokens=300,
             )
             return response.choices[0].message.content.strip()
