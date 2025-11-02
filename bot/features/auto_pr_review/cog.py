@@ -1,20 +1,27 @@
-from discord.ext import commands
+from urllib import request
+from discord.ext import tasks, commands
 import requests
+import aiohttp
+import xml.etree.ElementTree as ET
+import json
 import re
 import os
-
-
 
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") # Deep Seek API
 MAX_LINES = 50 # Limit of max diff changes sent to the deepseek API to save tokens
 MAX_TOKEN = 150 # Limit for token usage
+STORAGE_PATH = os.path.join(os.path.dirname(__file__), "tracked_repos.json")
+
 
 class AutoPRReviewCog(commands.Cog):
     """Auto PR Review Assistant feature placeholder implementation."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.tracked_feeds = {}
+        self.load_tracked_feeds()
+        self.poll_atom_feeds.start()
 
 
     
@@ -179,6 +186,184 @@ class AutoPRReviewCog(commands.Cog):
                 f"{deepseek_response}\n"
                 f"🔗 **Link:** {responseJson['html_url']}"
             )
+
+
+    def load_tracked_feeds(self):
+        if os.path.exists(STORAGE_PATH):
+            try:
+                with open(STORAGE_PATH, "r", encoding="utf-8") as f:
+                    self.tracked_feeds = json.load(f)
+            except Exception:
+                self.tracked_feeds = {}
+        else:
+            self.tracked_feeds = {}
+
+
+    def save_tracked_feeds(self):
+        with open(STORAGE_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.tracked_feeds, f, indent=2)
+
+
+    def make_atom_url(self, owner: str, repo: str) -> str:
+        return f"https://github.com/{owner}/{repo}/commits.atom"
+
+
+    def parse_atom_entries(self, xml_text: str) -> list:
+        """Return list of entries as dicts with keys id,title,link,updated,author"""
+        entries = []
+        try:
+            root = ET.fromstring(xml_text)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            found = root.findall("atom:entry", ns)
+            for entry in found:
+                eid = entry.find("atom:id", ns).text
+                title = entry.find("atom:title", ns).text
+                link = entry.find("atom:link", ns).get("href")
+                updated = entry.find("atom:updated", ns).text
+                author = entry.find("atom:author/atom:name", ns).text
+                entries.append(
+                    {
+                        "id": eid,
+                        "title": title,
+                        "link": link,
+                        "updated": updated,
+                        "author": author,
+                    }
+                )
+        except ET.ParseError:
+            return []
+        return entries
+
+
+    @commands.command(name="trackrepo", aliases=["track"])
+    async def trackrepo(self, ctx: commands.Context, repo: str):
+        """Start tracking a repo's commits via its Atom feed.
+        Usage: !trackrepo owner/repo or full URL
+        Notifications will be sent to the current channel.
+        """
+        # Accept owner/repo or full github url
+        m = re.match(r"^https?://github\.com/([\w-]+)/([\w.-]+)(/)?$", repo)
+        if m:
+            owner, r = m.group(1), m.group(2)
+        else:
+            m2 = re.match(r"^([\w-]+)/([\w.-]+)$", repo)
+            if not m2:
+                await ctx.send(
+                    "❌ Please provide a repo as owner/repo or a full GitHub URL."
+                )
+                return
+            owner, r = m2.group(1), m2.group(2)
+
+        key = f"{owner}/{r}"
+        atom_url = self.make_atom_url(owner, r)
+
+        # fetch feed once to get latest id
+        response = requests.get(atom_url)
+
+        if response.status_code != 200:
+            await ctx.send(f"❌ Failed to fetch feed for {key} (HTTP {response.status_code}).")
+        else:
+
+            entries = self.parse_atom_entries(response.content)
+            last_id = entries[0]["id"] if entries else ""
+
+            self.tracked_feeds[key] = {
+                "atom_url": atom_url,
+                "last_id": last_id,
+                "channel_id": ctx.channel.id,
+            }
+            self.save_tracked_feeds()
+            await ctx.send(f"✅ Now tracking commits for {key} in this channel.")
+
+
+    @commands.command(name="untrackrepo", aliases=["untrack"])
+    async def untrackrepo(self, ctx: commands.Context, repo: str):
+        """Stop tracking a repo's atom feed."""
+        m = re.match(r"^https?://github\.com/([\w-]+)/([\w.-]+)(/)?$", repo)
+        if m:
+            key = f"{m.group(1)}/{m.group(2)}"
+        else:
+            m2 = re.match(r"^([\w-]+)/([\w.-]+)$", repo)
+            if not m2:
+                await ctx.send(
+                    "❌ Please provide a repo as owner/repo or a full GitHub URL."
+                )
+                return
+            key = f"{m2.group(1)}/{m2.group(2)}"
+
+        if key in self.tracked_feeds:
+            del self.tracked_feeds[key]
+            self.save_tracked_feeds()
+            await ctx.send(f"✅ Stopped tracking {key}.")
+        else:
+            await ctx.send("❌ That repository is not being tracked.")
+
+
+    @commands.command(name="listtrackedrepos", aliases=["listtracked", "tracked"])
+    async def listtrackedrepos(self, ctx: commands.Context):
+        if not self.tracked_feeds:
+            await ctx.send("No feeds are currently tracked.")
+            return
+        lines = []
+        for key, info in self.tracked_feeds.items():
+            ch = self.bot.get_channel(info.get("channel_id"))
+            ch_text = ch.mention if ch else "unknown channel"
+            lines.append(f"{key} → {ch_text}")
+        await ctx.send("Tracked feeds:\n" + "\n - ".join(lines))
+
+
+    @tasks.loop(minutes=1)
+    async def poll_atom_feeds(self):
+        if not self.tracked_feeds:
+            return
+        async with aiohttp.ClientSession() as session:
+            for key, info in self.tracked_feeds.items():
+                atom_url = info.get("atom_url")
+                # fetch feed once to get latest id
+                response = requests.get(atom_url)
+
+                if response.status_code != 200:
+                    continue
+
+
+                entries = self.parse_atom_entries(response.content)
+                if not entries:
+                    continue
+
+                newest_id = entries[0]["id"]
+                last_id = info.get("last_id")
+                if last_id == newest_id:
+                    continue
+
+                # find new entries up to newest
+                new_entries = []
+                for e in entries:
+                    if e["id"] == last_id:
+                        break
+                    new_entries.append(e)
+
+                # send notifications oldest-first
+                channel = self.bot.get_channel(info.get("channel_id"))
+                for e in reversed(new_entries):
+                    msg = (
+                        f"🔔 New commit in **{key}**\n"
+                        f"**Author:** {e.get('author', '')}\n"
+                        f"**Message:** {e.get('title', '')}\n"
+                        f"[Link to commit]({e.get('link', '')})"
+                        # ? Maybe include timestamp of commit
+                    )
+                    try:
+                        if channel:
+                            await channel.send(msg)
+                        else:
+                            # fallback: skip or implement owner DM
+                            pass
+                    except Exception:
+                        pass
+
+                # update last_id to newest
+                self.tracked_feeds[key]["last_id"] = newest_id
+                self.save_tracked_feeds()
 
 
 async def setup(bot: commands.Bot):
