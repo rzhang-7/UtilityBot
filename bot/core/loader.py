@@ -13,7 +13,7 @@ def iter_feature_extensions():
             yield f"bot.features.{name}.cog"
 
 
-async def load_feature_extensions(bot) -> None:
+async def load_feature_extensions(bot):
     for ext in iter_feature_extensions():
         try:
             await bot.load_extension(ext)
