@@ -9,13 +9,16 @@ import os
 import json
 
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") # Deep Seek API
-MAX_LINES = 50 # Limit of max diff changes sent to the deepseek API to save tokens
-MAX_TOKEN = 150 # Limit for token usage
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # Deep Seek API
+MAX_LINES = 50  # Limit of max diff changes sent to the deepseek API to save tokens
+MAX_TOKEN = 150  # Limit for token usage
 STORAGE_PATH = os.path.join(os.path.dirname(__file__), "tracked_repos.json")
 
 
-GITHUB_PAT = os.getenv("GITHUB_PAT") #github pat is needed to make requests to GitHub API
+GITHUB_PAT = os.getenv(
+    "GITHUB_PAT"
+)  # github pat is needed to make requests to GitHub API
+
 
 class AutoPRReviewCog(commands.Cog):
     """Auto PR Review Assistant feature placeholder implementation."""
@@ -26,13 +29,65 @@ class AutoPRReviewCog(commands.Cog):
         self.load_tracked_feeds()
         self.poll_atom_feeds.start()
 
+    # method that returns files to ignore when putting it into ai
+    def ignore_files(self, repo):
 
-    #method to get number of additions and deletions 
+        raw_response = requests.get(
+            f"https://api.github.com/repos/Electrium-Mobility/{repo}/git/trees/main?recursive=1",
+            headers={
+                "Authorization": f"token {GITHUB_PAT}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36",
+            },
+        )
+
+        if raw_response.status_code != 200:
+            print(f"Error: {raw_response.status_code}")
+            return
+
+        response_json = raw_response.json()
+
+        paths = [item["path"] for item in response_json["tree"]]
+
+        ignore_patterns = {
+            ".md",
+            ".git",
+            "LICENSE",
+            ".txt",
+            ".env",
+            "mock",
+            "test_data",
+            "sample_data",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".pdf",
+            ".zip",
+            ".exe",
+            ".dll",
+            ".bin",
+            ".csv",
+            ".mp3",
+            ".mp4",
+        }
+
+        ignore_files = [
+            path
+            for path in paths
+            if any(pattern in path for pattern in ignore_patterns)
+        ]
+
+        return ignore_files
+
+    # method to get number of additions and deletions
     def commit_information(self, repo, commit_sha):
-        raw_response = requests.get(f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}", headers={
-            'Authorization': f"token {GITHUB_PAT}",
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36'
-        })
+        raw_response = requests.get(
+            f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}",
+            headers={
+                "Authorization": f"token {GITHUB_PAT}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36",
+            },
+        )
 
         if raw_response.status_code != 200:
             print(f"Error: {raw_response.status_code}")
@@ -43,18 +98,15 @@ class AutoPRReviewCog(commands.Cog):
         deleted_lines = parse_response["stats"]["deletions"]
         added_lines = parse_response["stats"]["additions"]
 
-        print(f"Total Number of Deletions are {deleted_lines}.") 
+        print(f"Total Number of Deletions are {deleted_lines}.")
         print(f"Total Number of Additions are {added_lines}.")
 
-    
     # method to remove unimportant lines from diff changes
     def filter_lines(self, lines):
         ignore_prefixes = ("import ", "from ", "#", "'''", '"""')
         return [
-            l for l in lines
-            if l.strip() and not l.strip().startswith(ignore_prefixes)
+            l for l in lines if l.strip() and not l.strip().startswith(ignore_prefixes)
         ]
-
 
     # method to extract only the diff changes from diff_text
     def extract_changes(self, diff_text):
@@ -63,19 +115,18 @@ class AutoPRReviewCog(commands.Cog):
 
         for line in diff_text.splitlines():
             if line.startswith("+++") or line.startswith("---"):
-                continue 
-            
+                continue
+
             ## Only add the lines the begin with + or -
             if line.startswith("+"):
                 added_lines.append(line[1:].strip())
             elif line.startswith("-"):
                 removed_lines.append(line[1:].strip())
-        
 
-        
-        return [self.filter_lines(added_lines)[:MAX_LINES], self.filter_lines(removed_lines)[:MAX_LINES]]
-    
-
+        return [
+            self.filter_lines(added_lines)[:MAX_LINES],
+            self.filter_lines(removed_lines)[:MAX_LINES],
+        ]
 
     def analyze_with_deepseek(self, changes):
         added_lines = changes[0]
@@ -121,65 +172,73 @@ class AutoPRReviewCog(commands.Cog):
             """
 
             response = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-            json={
-                "model": "deepseek-coder",
-                "messages": [
-                    {"role": "system", "content": "You are an experienced code reviewer analyzing Git diffs."},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": MAX_TOKEN,
-            },
-            timeout=30,)
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
+                json={
+                    "model": "deepseek-coder",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are an experienced code reviewer analyzing Git diffs.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": MAX_TOKEN,
+                },
+                timeout=30,
+            )
 
             data = response.json()
             return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
             return f"Error with deepseek: {e}"
 
-        
-
-
     def analyze_diff(self, url):
-        diffResponse = requests.get(url,
-            headers={"Accept": 'application/vnd.github.v3.diff'}
+        diffResponse = requests.get(
+            url, headers={"Accept": "application/vnd.github.v3.diff"}
         )
 
         diff_text = diffResponse.text
         diff_changes = self.extract_changes(diff_text)
         return self.analyze_with_deepseek(diff_changes)
-        
 
     @commands.command(name="prreview")
-    @commands.cooldown(1, 30, commands.BucketType.user) # Add a rate limit to only every 30s
+    @commands.cooldown(
+        1, 30, commands.BucketType.user
+    )  # Add a rate limit to only every 30s
     async def prreview(self, ctx: commands.Context, *, pr_link: str):
         """Placeholder command: accept a PR link and return a placeholder response."""
-        
+
         print("prreview command called")
         print(f"Received PR link: {pr_link}")
 
-
         pattern = r"https://github.com/Electrium-Mobility/([^/]+)/pull/(\d+)"
-        match = re.match(pattern,pr_link)
+        match = re.match(pattern, pr_link)
         if match is None:
-            await ctx.send("❌ Invalid format for a PR link. Please send a PR from an Electrium-Mobility repo.")
+            await ctx.send(
+                "❌ Invalid format for a PR link. Please send a PR from an Electrium-Mobility repo."
+            )
             return
 
         project, pullNumber = match.groups()
 
-        response = requests.get(f'https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}')
+        response = requests.get(
+            f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
+        )
 
         if response.status_code != 200:
-            await ctx.send(f"Failed to fetch PR details, Please try again different PR link")
+            await ctx.send(
+                f"Failed to fetch PR details, Please try again different PR link"
+            )
         else:
             responseJson = response.json()
 
-            deepseek_response = self.analyze_diff(f'https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}')
-            deepseek_response = deepseek_response.replace("\\n", "\n").replace("\n**", "\n\n**").strip()
-        
-        
-            
+            deepseek_response = self.analyze_diff(
+                f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
+            )
+            deepseek_response = (
+                deepseek_response.replace("\\n", "\n").replace("\n**", "\n\n**").strip()
+            )
 
             mergeable_state = responseJson.get("mergeable_state")
             merged = responseJson.get("merged", False)
@@ -195,7 +254,6 @@ class AutoPRReviewCog(commands.Cog):
             else:
                 merge_status = "❓ **Merge status unknown (GitHub still checking...)**"
 
-
             await ctx.send(
                 f"✅ **Pull Request Received!**\n\n"
                 f"📦 **Repository:** `{project}`\n"
@@ -209,7 +267,6 @@ class AutoPRReviewCog(commands.Cog):
                 f"🔗 **Link:** {responseJson['html_url']}"
             )
 
-
     def load_tracked_feeds(self):
         if os.path.exists(STORAGE_PATH):
             try:
@@ -220,15 +277,12 @@ class AutoPRReviewCog(commands.Cog):
         else:
             self.tracked_feeds = {}
 
-
     def save_tracked_feeds(self):
         with open(STORAGE_PATH, "w", encoding="utf-8") as f:
             json.dump(self.tracked_feeds, f, indent=2)
 
-
     def make_atom_url(self, owner: str, repo: str) -> str:
         return f"https://github.com/{owner}/{repo}/commits.atom"
-
 
     def parse_atom_entries(self, xml_text: str) -> list:
         """Return list of entries as dicts with keys id,title,link,updated,author"""
@@ -256,7 +310,6 @@ class AutoPRReviewCog(commands.Cog):
             return []
         return entries
 
-
     @commands.command(name="trackrepo", aliases=["track"])
     async def trackrepo(self, ctx: commands.Context, repo: str):
         """Start tracking a repo's commits via its Atom feed.
@@ -283,7 +336,9 @@ class AutoPRReviewCog(commands.Cog):
         response = requests.get(atom_url)
 
         if response.status_code != 200:
-            await ctx.send(f"❌ Failed to fetch feed for {key} (HTTP {response.status_code}).")
+            await ctx.send(
+                f"❌ Failed to fetch feed for {key} (HTTP {response.status_code})."
+            )
         else:
 
             entries = self.parse_atom_entries(response.content)
@@ -296,7 +351,6 @@ class AutoPRReviewCog(commands.Cog):
             }
             self.save_tracked_feeds()
             await ctx.send(f"✅ Now tracking commits for {key} in this channel.")
-
 
     @commands.command(name="untrackrepo", aliases=["untrack"])
     async def untrackrepo(self, ctx: commands.Context, repo: str):
@@ -320,7 +374,6 @@ class AutoPRReviewCog(commands.Cog):
         else:
             await ctx.send("❌ That repository is not being tracked.")
 
-
     @commands.command(name="listtrackedrepos", aliases=["listtracked", "tracked"])
     async def listtrackedrepos(self, ctx: commands.Context):
         if not self.tracked_feeds:
@@ -332,7 +385,6 @@ class AutoPRReviewCog(commands.Cog):
             ch_text = ch.mention if ch else "unknown channel"
             lines.append(f"{key} → {ch_text}")
         await ctx.send("Tracked feeds:\n" + "\n - ".join(lines))
-
 
     @tasks.loop(minutes=1)
     async def poll_atom_feeds(self):
@@ -346,7 +398,6 @@ class AutoPRReviewCog(commands.Cog):
 
                 if response.status_code != 200:
                     continue
-
 
                 entries = self.parse_atom_entries(response.content)
                 if not entries:
