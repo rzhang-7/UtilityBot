@@ -96,6 +96,109 @@ class SmartQACog(commands.Cog):
         """Placeholder command: accept a question and return a placeholder response."""
         await ctx.send(f"Received question: {question}\n(Placeholder response, to be implemented)")
 
+    async def _fetch_collections(self):
+        """Fetch all collections."""
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{self.api_url}/collections.list", headers=headers) as resp:
+                res = await resp.json()
+                return res.get("data", [])
+
+    async def _fetch_documents(self, collection_id):
+        """Fetch all documents in a collection (recursively)."""
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        data = {"collectionId": collection_id}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{self.api_url}/documents.list", headers=headers, json=data) as resp:
+                res = await resp.json()
+                return res.get("data", [])
+
+
+
+
+    def _get_full_path(self, doc, by_id):
+        """Gets full path of document, separated by '/'"""
+        parts = [doc.get("title")] # get title of each document and store in array `parts`
+        parent_id = doc.get("parentDocumentId") # get parent id of each document
+        
+        while parent_id: # while we havent reached root
+            parent = by_id.get(parent_id) # find curr document's parent using id 
+                                          # (pass parent_id as key in by_id)
+            parts.append(parent["title"]) # add title of parent to path
+            parent_id = parent.get("parentDocumentId") # set new parent id as the parent_id 
+                                                       # of curr document
+
+        parts.reverse() # reverse titles (path is from root to document, but its the other way
+                        # around since we found it recursively)
+
+        return "/".join(parts) # join titles with '/', then return it
+
+    @commands.command(name="docs")
+    async def get_bottom_docs(self, ctx):
+        """List bottom-level documents after interactively selecting a collection."""
+
+        # Fetch collections
+        collections = await self._fetch_collections() # get all collections
+        if not collections: # there are no collections
+            return await ctx.send("No collections found.")
+
+        # Display collections
+        msg = "**Select a collection by name:**\n"
+        for i, c in enumerate(collections, start=1):
+            msg += f"{i}. {c['name']}\n" # display "number. title"
+
+        await ctx.send(msg)
+
+        # Wait for user reply
+        def check(m):
+            # must be same discord user and same channel
+            return m.author == ctx.author and m.channel == ctx.channel 
+
+        # give 30 sec time limit for user response
+        try:  
+            reply = await self.bot.wait_for("message", check=check, timeout=30) 
+        except TimeoutError:
+            return await ctx.send("Timed out waiting for a response.")
+
+        name = str(reply.content) # user reply (name of collection)
+        found = 0
+        index = 0
+        # Find collection based on name
+        for collection in collections:
+            if collection['name'] == name:
+                found = 1
+                break
+            index+=1
+        
+        if not found: # Didn't find collection
+            return await ctx.send("Invalid collection name. Please try again.")
+        
+        selected = collections[index]
+        # await ctx.send(f"{index}") # debug
+        collection_id = selected["id"]
+        collection_name = selected["name"]
+
+        await ctx.send(f"Fetching bottom-level documents from **{collection_name}**...")
+
+        # Fetch documents
+        docs = await self._fetch_documents(collection_id) # get all documents inside collection
+        
+        if not docs: # no documents in collection
+            return await ctx.send("No documents found in this collection.")
+        
+        # Find bottom-level docs and get its full path
+
+        count = len(docs) # number of documents
+        
+        by_id = {doc["id"]: doc for doc in docs} # dictionary map id to doc (key : value) for each document 
+        response = f"**{count} bottom-level documents found in {collection_name}:**\n"
+        
+        for doc in docs: # get full path of all documents
+            response += f"- {self._get_full_path(doc, by_id)}\n"
+
+        await ctx.send(response) # print full path of all documents 
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SmartQACog(bot))
