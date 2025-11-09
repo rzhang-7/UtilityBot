@@ -9,6 +9,7 @@ import logging
 from dotenv import load_dotenv
 import ctypes
 from deepgram import DeepgramClient
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -22,12 +23,29 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 deepgram = DeepgramClient(api_key=DEEPGRAM_API_KEY)
 
 # Load Opus DLL for audio decoding
-opus_path = r"C:\Users\tanis\Desktop\UtilityBot\bot\library"
-os.add_dll_directory(opus_path)
-os.environ["PATH"] = opus_path + os.pathsep + os.environ["PATH"]
-os.environ["OPUS_LIBRARY"] = os.path.join(opus_path, "opus.dll")
+opus_path = os.getenv("OPUS_DLL_PATH")
 
-ctypes.cdll.LoadLibrary(os.path.join(opus_path, "opus.dll"))
+if not opus_path:
+    raise EnvironmentError("OPUS_DLL_PATH not set in .env")
+
+opus_dll_path = Path(opus_path)
+
+if not opus_dll_path.exists():
+    raise FileNotFoundError(f"Opus DLL not found at {opus_dll_path}")
+
+# Handle platform-specific loading
+if os.name == "nt":
+    os.add_dll_directory(str(opus_dll_path.parent))
+else:
+    lib_env = "LD_LIBRARY_PATH" if os.name == "posix" else "DYLD_LIBRARY_PATH"
+    os.environ[lib_env] = str(opus_dll_path.parent) + os.pathsep + os.environ.get(lib_env, "")
+
+# Update environment so opuslib can locate it
+os.environ["OPUS_LIBRARY"] = str(opus_dll_path)
+os.environ["PATH"] = str(opus_dll_path.parent) + os.pathsep + os.environ["PATH"]
+
+ctypes.cdll.LoadLibrary(str(opus_dll_path))
+
 import opuslib
 
 # Decodes incoming Opus audio and stores PCM samples
@@ -74,7 +92,7 @@ class MeetingNotesCog(commands.Cog):
         print("Audio saved to meeting_audio.wav")
         return "meeting_audio.wav"
     
-    # Summarize text using OpenAI
+    # Summarize text using DeepSeek
     async def summarize_text(self, text):
         try:
             response = client.chat.completions.create(
