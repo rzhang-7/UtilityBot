@@ -1,2 +1,14 @@
 discord.py>=2.3.2
 python-dotenv>=1.0.1
+aiohttp>=3.8.0
+requests>=2.28.0
+deepseek>=0.1.0
+openai>=1.0.0
+numpy>=1.24.0
+soundfile>=0.12.0
+opuslib>=3.0.0
+deepgram-sdk>=3.0.0
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.1.0
+discord-ext-voice-recv>=0.0.3

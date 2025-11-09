@@ -236,9 +236,14 @@ class AutoPRReviewCog(commands.Cog):
             deepseek_response = self.analyze_diff(
                 f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
             )
-            deepseek_response = (
-                deepseek_response.replace("\\n", "\n").replace("\n**", "\n\n**").strip()
-            )
+            
+            # Handle case where DEEPSEEK_API_KEY is not set
+            if isinstance(deepseek_response, int):  # -1 returned when API key missing
+                deepseek_response = "⚠️ AI analysis unavailable (DEEPSEEK_API_KEY not configured)"
+            else:
+                deepseek_response = (
+                    deepseek_response.replace("\\n", "\n").replace("\n**", "\n\n**").strip()
+                )
 
             mergeable_state = responseJson.get("mergeable_state")
             merged = responseJson.get("merged", False)
@@ -393,13 +398,18 @@ class AutoPRReviewCog(commands.Cog):
         async with aiohttp.ClientSession() as session:
             for key, info in self.tracked_feeds.items():
                 atom_url = info.get("atom_url")
-                # fetch feed once to get latest id
-                response = requests.get(atom_url)
-
-                if response.status_code != 200:
+                # fetch feed asynchronously using aiohttp
+                try:
+                    async with session.get(atom_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status != 200:
+                            continue
+                        # decode bytes to string for XML parsing
+                        xml_content = await response.text()
+                        entries = self.parse_atom_entries(xml_content)
+                except Exception as e:
+                    print(f"Error fetching feed {key}: {e}")
                     continue
 
-                entries = self.parse_atom_entries(response.content)
                 if not entries:
                     continue
 

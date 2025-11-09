@@ -1,5 +1,6 @@
 import discord
-from discord.ext import commands, voice_recv
+from discord.ext import commands
+import discord.ext.voice_recv as voice_recv
 from openai import OpenAI
 import soundfile as sf
 import numpy as np
@@ -79,7 +80,23 @@ class MeetingNotesCog(commands.Cog):
         self.bot = bot
         self.vc = None
         self.audio_buffer = []
+        self.opus_available = self._validate_opus()
         super().__init__()
+    
+    def _validate_opus(self) -> bool:
+        """Validate that Opus library is loaded correctly."""
+        try:
+            import opuslib
+            # Check if opuslib has the Decoder class
+            if hasattr(opuslib, 'Decoder'):
+                log.info("✅ Opus library validation successful")
+                return True
+            else:
+                log.error("❌ Opus library found but Decoder class not available")
+                return False
+        except Exception as e:
+            log.error(f"❌ Opus library validation failed: {e}")
+            return False
 
     # Create WAV file from recorded audio
     async def cleanup(self):
@@ -87,10 +104,16 @@ class MeetingNotesCog(commands.Cog):
             print("No audio data received.")
             return None
 
-        all_audio = np.concatenate(self.audio_buffer).astype(np.int16)
-        sf.write("meeting_audio.wav", all_audio, 48000, subtype="PCM_16")
-        print("Audio saved to meeting_audio.wav")
-        return "meeting_audio.wav"
+        # Move blocking I/O to executor to prevent bot freeze
+        def save_audio():
+            all_audio = np.concatenate(self.audio_buffer).astype(np.int16)
+            sf.write("meeting_audio.wav", all_audio, 48000, subtype="PCM_16")
+            print("Audio saved to meeting_audio.wav")
+            return "meeting_audio.wav"
+        
+        loop = self.bot.loop
+        file_path = await loop.run_in_executor(None, save_audio)
+        return file_path
     
     # Summarize text using DeepSeek
     async def summarize_text(self, text):
@@ -120,6 +143,10 @@ class MeetingNotesCog(commands.Cog):
     # Command to start recording
     @commands.command(name="record")
     async def record(self, ctx):
+        # Check if Opus library is available
+        if not self.opus_available:
+            return await ctx.send("❌ Recording feature is unavailable. Opus library is not properly configured.")
+        
         if ctx.author.voice is None:
             return await ctx.send("You must be in a voice channel to use this command.")
 
@@ -134,6 +161,10 @@ class MeetingNotesCog(commands.Cog):
     # Command to stop recording and process audio
     @commands.command(name="stop")
     async def stop(self, ctx):
+        # Check if Opus library is available
+        if not self.opus_available:
+            return await ctx.send("❌ Recording feature is unavailable. Opus library is not properly configured.")
+        
         if not self.vc:
             return await ctx.send("I'm not currently recording.")
 
